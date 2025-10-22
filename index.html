@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Socket.IO chat</title>
+    <style>
+      body { margin: 0; padding-bottom: 3rem; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+      #topbar { position: sticky; top: 0; background:#333; color:#fff; padding:10px; text-align:center; z-index:10; }
+      #form { background: rgba(0,0,0,0.15); padding: 0.25rem; position: fixed; bottom: 0; left: 0; right: 0; display: flex; height: 3rem; box-sizing: border-box; backdrop-filter: blur(10px); }
+      #input { border: none; padding: 0 1rem; flex-grow: 1; border-radius: 2rem; margin: 0.25rem; }
+      #input:focus { outline: none; }
+      #form > button { background: #333; border: none; padding: 0 1rem; margin: 0.25rem; border-radius: 3px; outline: none; color: #fff; }
+      #messages { list-style-type: none; margin: 0; padding: 0; }
+      #messages > li { padding: 0.5rem 1rem; }
+      #messages > li:nth-child(odd) { background: #efefef; }
+    </style>
+  </head>
+  <body>
+    <!-- Barra superior -->
+    <div id="topbar">
+      <strong>Usuarios conectados: <span id="user-count">0</span></strong>
+      <div style="font-size:12px; opacity:0.85;">Se actualiza en tiempo real cuando alguien se conecta o desconecta</div>
+    </div>
+
+    <ul id="messages"></ul>
+    <form id="form" action="">
+      <input id="input" autocomplete="off" /><button>Send</button>
+    </form>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+  const socket = io();
+
+  const messages = document.getElementById('messages');
+  const form = document.getElementById('form');
+  const input = document.getElementById('input');
+  const userCountEl = document.getElementById('user-count');
+
+  let myUsername = null;
+  let myColor = null;
+
+  // 1) Pedir nombre y color al entrar
+  function askUsername() {
+    const proposed = prompt('Elige un nombre de usuario:');
+    socket.emit('set username', proposed, (res) => {
+      if (!res || !res.ok) {
+        alert('Nombre inválido. Prueba de nuevo.');
+        return askUsername();
+      }
+      myUsername = res.username;
+
+      // ✅ tras elegir nombre, pedimos color
+      const proposedColor = prompt('Elige un color (por ejemplo "tomato" o "#ff5722"). Deja vacío para aleatorio:');
+      socket.emit('set color', proposedColor, (ack) => {
+        if (ack && ack.ok) {
+          myColor = ack.color;
+          console.log('🎨 Color elegido:', myColor);
+        }
+      });
+    });
+  }
+  askUsername();
+
+  // 2) Envío de mensajes
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    if (!input.value) return;
+    if (!myUsername) {
+      alert('Debes elegir un nombre antes de chatear.');
+      return askUsername();
+    }
+    socket.emit('chat message', input.value);
+    input.value = '';
+  });
+
+  // 3) Render de mensajes normales (con hora y color)
+  socket.off('chat message').on('chat message', function (msg) {
+    const li = document.createElement('li');
+
+    // Hora local
+    const date = new Date(msg.ts);
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    const time = `${hours}:${minutes}`;
+
+    // Nombre en color
+    const userSpan = document.createElement('span');
+    userSpan.textContent = msg.user;
+    userSpan.style.fontWeight = '600';
+    if (msg.color) userSpan.style.color = msg.color;
+
+    li.appendChild(userSpan);
+    li.appendChild(document.createTextNode(` [${time}]: ${msg.text}`));
+    messages.appendChild(li);
+    window.scrollTo(0, document.body.scrollHeight);
+  });
+
+  // 4) Mensajes de sistema (uniones/salidas)
+  socket.off('system').on('system', function (evt) {
+    const li = document.createElement('li');
+    li.style.fontStyle = 'italic';
+    li.style.opacity = '0.8';
+    li.textContent = `— ${evt.text}`;
+    messages.appendChild(li);
+    window.scrollTo(0, document.body.scrollHeight);
+  });
+
+  // 5) Conteo de usuarios
+  socket.off('UserCount').on('UserCount', function (count) {
+    userCountEl.textContent = count;
+  });
+
+  // ==============================================================
+  // === Usuario escribiendo en tiempo real =======================
+  // ==============================================================
+
+  const topbar = document.getElementById('topbar');
+  const typingBar = document.createElement('div');
+  typingBar.id = 'typing-indicator';
+  typingBar.style.textAlign = 'center';
+  typingBar.style.fontSize = '12px';
+  typingBar.style.opacity = '0.8';
+  typingBar.style.padding = '6px 10px';
+  typingBar.style.display = 'none';
+  topbar.insertAdjacentElement('afterend', typingBar);
+
+  const typingUsers = new Set();
+  let iAmTyping = false;
+  let typingTimeout = null;
+  const TYPING_IDLE_MS = 1200;
+
+  function renderTyping() {
+    if (typingUsers.size === 0) {
+      typingBar.style.display = 'none';
+      typingBar.textContent = '';
+      return;
+    }
+    const arr = Array.from(typingUsers);
+    let text = '';
+    if (arr.length === 1) {
+      text = `${arr[0]} está escribiendo...`;
+    } else if (arr.length === 2) {
+      text = `${arr[0]} y ${arr[1]} están escribiendo...`;
+    } else {
+      text = `${arr[0]}, ${arr[1]} y ${arr.length - 2} más están escribiendo...`;
+    }
+    typingBar.textContent = text;
+    typingBar.style.display = 'block';
+  }
+
+  function handleTypingInput() {
+    if (!myUsername) return;
+    if (!iAmTyping) {
+      socket.emit('typing');
+      iAmTyping = true;
+    }
+    clearTimeout(typingTimeout);
+    typingTimeout = setTimeout(() => {
+      socket.emit('stop typing');
+      iAmTyping = false;
+    }, TYPING_IDLE_MS);
+  }
+
+  input.addEventListener('input', handleTypingInput);
+  input.addEventListener('blur', () => {
+    if (iAmTyping) {
+      socket.emit('stop typing');
+      iAmTyping = false;
+    }
+  });
+
+  form.addEventListener('submit', () => {
+    if (iAmTyping) {
+      socket.emit('stop typing');
+      iAmTyping = false;
+      clearTimeout(typingTimeout);
+    }
+  });
+
+  socket.off('typing').on('typing', ({ user }) => {
+    if (!user || user === myUsername) return;
+    typingUsers.add(user);
+    renderTyping();
+  });
+
+  socket.off('stop typing').on('stop typing', ({ user }) => {
+    if (!user || user === myUsername) return;
+    typingUsers.delete(user);
+    renderTyping();
+  });
+</script>
+
+  </body>
+</html>
