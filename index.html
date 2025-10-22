@@ -48,7 +48,7 @@
       }
       myUsername = res.username;
 
-      // ✅ tras elegir nombre, pedimos color
+      // tras elegir nombre, pedimos color
       const proposedColor = prompt('Elige un color (por ejemplo "tomato" o "#ff5722"). Deja vacío para aleatorio:');
       socket.emit('set color', proposedColor, (ack) => {
         if (ack && ack.ok) {
