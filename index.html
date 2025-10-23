@@ -2,9 +2,11 @@
 <html>
   <head>
     <title>Socket.IO chat</title>
+    <meta charset="utf-8" />
     <style>
-      body { margin: 0; padding-bottom: 3rem; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+      body { margin: 0; padding-bottom: 3.5rem; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
       #topbar { position: sticky; top: 0; background:#333; color:#fff; padding:10px; text-align:center; z-index:10; }
+      #topbar small { display:block; opacity:.85; }
       #form { background: rgba(0,0,0,0.15); padding: 0.25rem; position: fixed; bottom: 0; left: 0; right: 0; display: flex; height: 3rem; box-sizing: border-box; backdrop-filter: blur(10px); }
       #input { border: none; padding: 0 1rem; flex-grow: 1; border-radius: 2rem; margin: 0.25rem; }
       #input:focus { outline: none; }
@@ -13,207 +15,224 @@
       #messages > li { padding: 0.5rem 1rem; }
       #messages > li:nth-child(odd) { background: #efefef; }
 
-      /* === Efecto flash al recibir un mensaje === */
-      @keyframes flash {
-        0%   { background: #fff59d; } /* amarillo claro */
-        100% { background: transparent; }
-      }
-      .flash {
-        animation: flash 600ms ease-out;
-      }
+      /* Flash visual al recibir un mensaje */
+      @keyframes flash { 0% { background: #fff59d; } 100% { background: transparent; } }
+      .flash { animation: flash 600ms ease-out; }
     </style>
   </head>
   <body>
     <!-- Barra superior -->
     <div id="topbar">
       <strong>Usuarios conectados: <span id="user-count">0</span></strong>
-      <div style="font-size:12px; opacity:0.85;">Se actualiza en tiempo real cuando alguien se conecta o desconecta</div>
+      <small> Sala: <span id="room-name">—</span> </small>
+      <small>Se actualiza en tiempo real cuando alguien se conecta o desconecta</small>
     </div>
 
+    <!-- Indicador de "usuario escribiendo..." se inyecta aquí debajo -->
+    <div id="typing-anchor"></div>
+
     <ul id="messages"></ul>
+
     <form id="form" action="">
-      <input id="input" autocomplete="off" /><button>Send</button>
+      <input id="input" autocomplete="off" placeholder="Escribe un mensaje..." />
+      <button>Enviar</button>
     </form>
 
-    <!-- 🔊 Sonido de notificación -->
+    <!-- Sonido de notificación -->
     <audio id="ping" src="notify.mp3" preload="auto"></audio>
 
-<script src="/socket.io/socket.io.js"></script>
-<script>
-  const socket = io();
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+      const socket = io();
 
-  const messages = document.getElementById('messages');
-  const form = document.getElementById('form');
-  const input = document.getElementById('input');
-  const userCountEl = document.getElementById('user-count');
-  const ping = document.getElementById('ping');
+      // Elementos UI
+      const messages = document.getElementById('messages');
+      const form = document.getElementById('form');
+      const input = document.getElementById('input');
+      const userCountEl = document.getElementById('user-count');
+      const topbar = document.getElementById('topbar');
+      const roomNameEl = document.getElementById('room-name');
+      const typingAnchor = document.getElementById('typing-anchor');
+      const ping = document.getElementById('ping');
 
-  let myUsername = null;
-  let myColor = null;
+      // Estado local
+      let myUsername = null;
+      let myColor = null;
+      let myRoom = 'General';
 
-  // 1) Pedir nombre y color al entrar
-  function askUsername() {
-    const proposed = prompt('Elige un nombre de usuario:');
-    socket.emit('set username', proposed, (res) => {
-      if (!res || !res.ok) {
-        alert('Nombre inválido. Prueba de nuevo.');
-        return askUsername();
+      // === Pedir nombre, color y sala ===
+      function askUsername() {
+        const proposed = prompt('Elige un nombre de usuario:');
+        socket.emit('set username', proposed, (res) => {
+          if (!res || !res.ok) {
+            alert('Nombre inválido. Prueba de nuevo.');
+            return askUsername();
+          }
+          myUsername = res.username;
+
+          const proposedColor = prompt('Elige un color (p. ej. "tomato" o "#ff5722"). Deja vacío para aleatorio:');
+          socket.emit('set color', proposedColor, (ack) => {
+            if (ack && ack.ok) {
+              myColor = ack.color;
+            }
+            // Tras nombre y color, elige sala
+            const proposedRoom = prompt('¿A qué sala quieres unirte? (General, Deportes, Música)', 'General');
+            socket.emit('join room', proposedRoom, (r) => {
+              if (r?.ok) {
+                myRoom = r.room;
+                roomNameEl.textContent = `#${myRoom}`;
+              }
+            });
+          });
+        });
       }
-      myUsername = res.username;
+      askUsername();
 
-      // tras elegir nombre, pedimos color
-      const proposedColor = prompt('Elige un color (por ejemplo "tomato" o "#ff5722"). Deja vacío para aleatorio:');
-      socket.emit('set color', proposedColor, (ack) => {
-        if (ack && ack.ok) {
-          myColor = ack.color;
-          console.log('🎨 Color elegido:', myColor);
+      // === Envío de mensajes ===
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        if (!input.value) return;
+        if (!myUsername) {
+          alert('Debes elegir un nombre antes de chatear.');
+          return askUsername();
+        }
+        socket.emit('chat message', input.value);
+        input.value = '';
+      });
+
+      // === Render de mensajes (hora, color, sonido, flash) ===
+      socket.off('chat message').on('chat message', function (msg) {
+        const li = document.createElement('li');
+
+        const date = new Date(msg.ts);
+        const hours = String(date.getHours()).padStart(2, '0');
+        const minutes = String(date.getMinutes()).padStart(2, '0');
+        const time = `${hours}:${minutes}`;
+
+        const userSpan = document.createElement('span');
+        userSpan.textContent = msg.user;
+        userSpan.style.fontWeight = '600';
+        if (msg.color) userSpan.style.color = msg.color;
+
+        li.appendChild(userSpan);
+        li.appendChild(document.createTextNode(` [${time}]`));
+        li.appendChild(document.createTextNode(`: ${msg.text}`));
+
+        // Parpadeo
+        li.classList.add('flash');
+        li.addEventListener('animationend', () => li.classList.remove('flash'), { once: true });
+
+        messages.appendChild(li);
+        window.scrollTo(0, document.body.scrollHeight);
+
+        // Sonido solo para mensajes de otros
+        if (msg.user !== myUsername) {
+          try { ping.currentTime = 0; ping.play().catch(()=>{}); } catch(_){}
         }
       });
-    });
-  }
-  askUsername();
 
-  // 2) Envío de mensajes
-  form.addEventListener('submit', function (e) {
-    e.preventDefault();
-    if (!input.value) return;
-    if (!myUsername) {
-      alert('Debes elegir un nombre antes de chatear.');
-      return askUsername();
-    }
-    socket.emit('chat message', input.value);
-    input.value = '';
-  });
+      // === Mensajes de sistema ===
+      socket.off('system').on('system', function (evt) {
+        const li = document.createElement('li');
+        li.style.fontStyle = 'italic';
+        li.style.opacity = '0.8';
+        li.textContent = `— ${evt.text}`;
+        messages.appendChild(li);
+        window.scrollTo(0, document.body.scrollHeight);
+      });
 
-  // 3) Render de mensajes normales (con hora, color, sonido y flash)
-  socket.off('chat message').on('chat message', function (msg) {
-    const li = document.createElement('li');
+      // === Conteo global ===
+      socket.off('UserCount').on('UserCount', function (count) {
+        userCountEl.textContent = count;
+      });
 
-    // Hora local
-    const date = new Date(msg.ts);
-    const hours = String(date.getHours()).padStart(2, '0');
-    const minutes = String(date.getMinutes()).padStart(2, '0');
-    const time = `${hours}:${minutes}`;
+      // === Eventos de rooms (avisos y conteo por sala) ===
+      socket.off('RoomJoined').on('RoomJoined', ({ room }) => {
+        myRoom = room;
+        roomNameEl.textContent = `#${room}`;
+        const li = document.createElement('li');
+        li.style.fontStyle = 'italic';
+        li.style.opacity = '0.8';
+        li.textContent = `— Te has unido a #${room}`;
+        messages.appendChild(li);
+      });
 
-    // Nombre en color
-    const userSpan = document.createElement('span');
-    userSpan.textContent = msg.user;
-    userSpan.style.fontWeight = '600';
-    if (msg.color) userSpan.style.color = msg.color;
+      socket.off('RoomUserCount').on('RoomUserCount', ({ room, count }) => {
+        if (room !== myRoom) return; // solo muestro si es mi sala
+        const li = document.createElement('li');
+        li.style.fontStyle = 'italic';
+        li.style.opacity = '0.7';
+        li.textContent = `— Usuarios en #${room}: ${count}`;
+        messages.appendChild(li);
+      });
 
-    li.appendChild(userSpan);
-    li.appendChild(document.createTextNode(` [${time}]: ${msg.text}`));
-
-    // Parpadeo visual
-    li.classList.add('flash');
-    li.addEventListener('animationend', () => li.classList.remove('flash'), { once: true });
-
-    messages.appendChild(li);
-    window.scrollTo(0, document.body.scrollHeight);
-
-    // Sonido (solo si el mensaje no es mío)
-    if (msg.user !== myUsername) {
-      try {
-        ping.currentTime = 0;
-        ping.play().catch(() => {});
-      } catch (_) {}
-    }
-  });
-
-  // 4) Mensajes de sistema (uniones/salidas)
-  socket.off('system').on('system', function (evt) {
-    const li = document.createElement('li');
-    li.style.fontStyle = 'italic';
-    li.style.opacity = '0.8';
-    li.textContent = `— ${evt.text}`;
-    messages.appendChild(li);
-    window.scrollTo(0, document.body.scrollHeight);
-  });
-
-  // 5) Conteo de usuarios
-  socket.off('UserCount').on('UserCount', function (count) {
-    userCountEl.textContent = count;
-  });
-
-  // ==============================================================
-  // === Usuario escribiendo en tiempo real =======================
-  // ==============================================================
-
-  const topbar = document.getElementById('topbar');
-  const typingBar = document.createElement('div');
-  typingBar.id = 'typing-indicator';
-  typingBar.style.textAlign = 'center';
-  typingBar.style.fontSize = '12px';
-  typingBar.style.opacity = '0.8';
-  typingBar.style.padding = '6px 10px';
-  typingBar.style.display = 'none';
-  topbar.insertAdjacentElement('afterend', typingBar);
-
-  const typingUsers = new Set();
-  let iAmTyping = false;
-  let typingTimeout = null;
-  const TYPING_IDLE_MS = 1200;
-
-  function renderTyping() {
-    if (typingUsers.size === 0) {
+      // === Usuario escribiendo (UI) ===
+      const typingBar = document.createElement('div');
+      typingBar.id = 'typing-indicator';
+      typingBar.style.textAlign = 'center';
+      typingBar.style.fontSize = '12px';
+      typingBar.style.opacity = '0.8';
+      typingBar.style.padding = '6px 10px';
       typingBar.style.display = 'none';
-      typingBar.textContent = '';
-      return;
-    }
-    const arr = Array.from(typingUsers);
-    let text = '';
-    if (arr.length === 1) {
-      text = `${arr[0]} está escribiendo...`;
-    } else if (arr.length === 2) {
-      text = `${arr[0]} y ${arr[1]} están escribiendo...`;
-    } else {
-      text = `${arr[0]}, ${arr[1]} y ${arr.length - 2} más están escribiendo...`;
-    }
-    typingBar.textContent = text;
-    typingBar.style.display = 'block';
-  }
+      typingAnchor.insertAdjacentElement('afterend', typingBar);
 
-  function handleTypingInput() {
-    if (!myUsername) return;
-    if (!iAmTyping) {
-      socket.emit('typing');
-      iAmTyping = true;
-    }
-    clearTimeout(typingTimeout);
-    typingTimeout = setTimeout(() => {
-      socket.emit('stop typing');
-      iAmTyping = false;
-    }, TYPING_IDLE_MS);
-  }
+      const typingUsers = new Set();
+      let iAmTyping = false;
+      let typingTimeout = null;
+      const TYPING_IDLE_MS = 1200;
 
-  input.addEventListener('input', handleTypingInput);
-  input.addEventListener('blur', () => {
-    if (iAmTyping) {
-      socket.emit('stop typing');
-      iAmTyping = false;
-    }
-  });
+      function renderTyping() {
+        if (typingUsers.size === 0) {
+          typingBar.style.display = 'none';
+          typingBar.textContent = '';
+          return;
+        }
+        const arr = Array.from(typingUsers);
+        let text = '';
+        if (arr.length === 1) text = `${arr[0]} está escribiendo...`;
+        else if (arr.length === 2) text = `${arr[0]} y ${arr[1]} están escribiendo...`;
+        else text = `${arr[0]}, ${arr[1]} y ${arr.length - 2} más están escribiendo...`;
+        typingBar.textContent = text;
+        typingBar.style.display = 'block';
+      }
 
-  form.addEventListener('submit', () => {
-    if (iAmTyping) {
-      socket.emit('stop typing');
-      iAmTyping = false;
-      clearTimeout(typingTimeout);
-    }
-  });
+      function handleTypingInput() {
+        if (!myUsername) return;
+        if (!iAmTyping) { socket.emit('typing'); iAmTyping = true; }
+        clearTimeout(typingTimeout);
+        typingTimeout = setTimeout(() => {
+          socket.emit('stop typing');
+          iAmTyping = false;
+        }, TYPING_IDLE_MS);
+      }
 
-  socket.off('typing').on('typing', ({ user }) => {
-    if (!user || user === myUsername) return;
-    typingUsers.add(user);
-    renderTyping();
-  });
+      input.addEventListener('input', handleTypingInput);
+      input.addEventListener('blur', () => {
+        if (iAmTyping) { socket.emit('stop typing'); iAmTyping = false; }
+      });
+      form.addEventListener('submit', () => {
+        if (iAmTyping) { socket.emit('stop typing'); iAmTyping = false; clearTimeout(typingTimeout); }
+      });
 
-  socket.off('stop typing').on('stop typing', ({ user }) => {
-    if (!user || user === myUsername) return;
-    typingUsers.delete(user);
-    renderTyping();
-  });
-</script>
+      socket.off('typing').on('typing', ({ user, room }) => {
+        if (!user || user === myUsername) return;
+        // (el server ya emite solo a la sala correcta)
+        typingUsers.add(user);
+        renderTyping();
+      });
+      socket.off('stop typing').on('stop typing', ({ user, room }) => {
+        if (!user || user === myUsername) return;
+        typingUsers.delete(user);
+        renderTyping();
+      });
 
+      // === Helper para cambiar de sala desde consola (opcional) ===
+      // Ejecuta en DevTools: changeRoom('Deportes')
+      window.changeRoom = function (room) {
+        socket.emit('join room', room, (r) => {
+          if (r?.ok) { myRoom = r.room; roomNameEl.textContent = `#${myRoom}`; }
+        });
+      };
+    </script>
   </body>
 </html>
