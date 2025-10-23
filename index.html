@@ -12,6 +12,15 @@
       #messages { list-style-type: none; margin: 0; padding: 0; }
       #messages > li { padding: 0.5rem 1rem; }
       #messages > li:nth-child(odd) { background: #efefef; }
+
+      /* === Efecto flash al recibir un mensaje === */
+      @keyframes flash {
+        0%   { background: #fff59d; } /* amarillo claro */
+        100% { background: transparent; }
+      }
+      .flash {
+        animation: flash 600ms ease-out;
+      }
     </style>
   </head>
   <body>
@@ -26,6 +35,9 @@
       <input id="input" autocomplete="off" /><button>Send</button>
     </form>
 
+    <!-- 🔊 Sonido de notificación -->
+    <audio id="ping" src="notify.mp3" preload="auto"></audio>
+
 <script src="/socket.io/socket.io.js"></script>
 <script>
   const socket = io();
@@ -34,6 +46,7 @@
   const form = document.getElementById('form');
   const input = document.getElementById('input');
   const userCountEl = document.getElementById('user-count');
+  const ping = document.getElementById('ping');
 
   let myUsername = null;
   let myColor = null;
@@ -72,7 +85,7 @@
     input.value = '';
   });
 
-  // 3) Render de mensajes normales (con hora y color)
+  // 3) Render de mensajes normales (con hora, color, sonido y flash)
   socket.off('chat message').on('chat message', function (msg) {
     const li = document.createElement('li');
 
@@ -90,8 +103,21 @@
 
     li.appendChild(userSpan);
     li.appendChild(document.createTextNode(` [${time}]: ${msg.text}`));
+
+    // Parpadeo visual
+    li.classList.add('flash');
+    li.addEventListener('animationend', () => li.classList.remove('flash'), { once: true });
+
     messages.appendChild(li);
     window.scrollTo(0, document.body.scrollHeight);
+
+    // Sonido (solo si el mensaje no es mío)
+    if (msg.user !== myUsername) {
+      try {
+        ping.currentTime = 0;
+        ping.play().catch(() => {});
+      } catch (_) {}
+    }
   });
 
   // 4) Mensajes de sistema (uniones/salidas)
