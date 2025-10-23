@@ -3,7 +3,69 @@ const app = express();
 const http = require('http');
 const server = http.createServer(app);
 const { Server } = require("socket.io");
+const fs = require('fs');
+const path = require('path');
 const io = new Server(server);
+
+// ---------- Persistencia en archivo ----------
+const HISTORY_FILE = path.join(__dirname, 'messages.json');
+// Estructura en memoria: { [room]: Array<msg> }
+let historyByRoom = {};
+
+// Carga historia desde disco
+function loadHistory() {
+  try {
+    if (fs.existsSync(HISTORY_FILE)) {
+      const raw = fs.readFileSync(HISTORY_FILE, 'utf8');
+      const parsed = JSON.parse(raw);
+      // Asegura estructura
+      if (parsed && typeof parsed === 'object') {
+        historyByRoom = parsed;
+      } else {
+        historyByRoom = {};
+      }
+    } else {
+      historyByRoom = {};
+    }
+  } catch (e) {
+    console.error('[HIST] Error leyendo messages.json, iniciando vacío:', e.message);
+    historyByRoom = {};
+  }
+}
+
+// Guarda historia a disco (sincrónico como pide la pista)
+function saveHistory() {
+  try {
+    fs.writeFileSync(HISTORY_FILE, JSON.stringify(historyByRoom, null, 2), 'utf8');
+  } catch (e) {
+    console.error('[HIST] Error escribiendo messages.json:', e.message);
+  }
+}
+
+// Añade un mensaje a la sala y persiste (con límite por sala)
+const ROOM_HISTORY_LIMIT = 500; // ajusta si quieres
+function appendMessage(room, msg) {
+  if (!historyByRoom[room]) historyByRoom[room] = [];
+  historyByRoom[room].push(msg);
+  // recorta para no crecer infinito
+  if (historyByRoom[room].length > ROOM_HISTORY_LIMIT) {
+    historyByRoom[room] = historyByRoom[room].slice(-ROOM_HISTORY_LIMIT);
+  }
+  saveHistory();
+}
+
+// Reproduce el historial a un socket que se une (sin tocar el cliente)
+function replayHistoryToSocket(room, socket) {
+  const arr = historyByRoom[room] || [];
+  for (const msg of arr) {
+    socket.emit('chat message', msg);
+  }
+}
+
+// Inicializa historial al arrancar
+loadHistory();
+
+// ---------- Resto de tu servidor ----------
 
 // Sirve el index
 app.get('/', (req, res) => {
@@ -86,6 +148,9 @@ io.on('connection', (socket) => {
       // Confirma al propio usuario la unión
       socket.emit('RoomJoined', { room: newRoom });
       emitRoomCount(newRoom);
+
+      // 🔁 Reproducir historial de esa sala solo a este socket
+      replayHistoryToSocket(newRoom, socket);
     }
   }
 
@@ -96,7 +161,7 @@ io.on('connection', (socket) => {
     ack && ack({ ok: true, room: name });
   });
 
-  // Mensajes de chat (solo a la sala actual)
+  // Mensajes de chat (solo a la sala actual) + persistencia
   socket.on('chat message', (text, ack) => {
     if (!socket.data.username) {
       return ack && ack({ ok: false, error: 'no-username' });
@@ -110,7 +175,12 @@ io.on('connection', (socket) => {
       color: socket.data.color || '#3f51b5',
       room,
     };
+
+    // 1) Emite a la sala
     io.to(room).emit('chat message', msg);
+    // 2) Guarda en historial persistente
+    appendMessage(room, msg);
+
     ack && ack({ ok: true });
   });
 
@@ -141,4 +211,3 @@ io.on('connection', (socket) => {
 server.listen(3000, () => {
   console.log('listening on *:3000');
 });
-
