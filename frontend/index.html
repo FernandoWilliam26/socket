@@ -7,6 +7,13 @@
       body { margin: 0; padding-bottom: 3.5rem; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
       #topbar { position: sticky; top: 0; background:#333; color:#fff; padding:10px; text-align:center; z-index:10; }
       #topbar small { display:block; opacity:.85; }
+
+      /* Bloque de auth */
+      #auth { padding: 12px; background: #f5f5f5; border-bottom: 1px solid #ddd; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      #auth input { padding: 6px 8px; }
+      #auth button { padding: 6px 10px; }
+      #authStatus { margin-left: 6px; opacity:.8; }
+
       #form { background: rgba(0,0,0,0.15); padding: 0.25rem; position: fixed; bottom: 0; left: 0; right: 0; display: flex; height: 3rem; box-sizing: border-box; backdrop-filter: blur(10px); }
       #input { border: none; padding: 0 1rem; flex-grow: 1; border-radius: 2rem; margin: 0.25rem; }
       #input:focus { outline: none; }
@@ -18,6 +25,9 @@
       /* Flash visual al recibir un mensaje */
       @keyframes flash { 0% { background: #fff59d; } 100% { background: transparent; } }
       .flash { animation: flash 600ms ease-out; }
+
+      /* Deshabilitar chat cuando no hay sesión */
+      .disabled { opacity: 0.55; pointer-events: none; }
     </style>
   </head>
   <body>
@@ -28,12 +38,22 @@
       <small>Se actualiza en tiempo real cuando alguien se conecta o desconecta</small>
     </div>
 
+    <!-- Formulario de autenticación -->
+    <div id="auth">
+      <input id="user" placeholder="Usuario" />
+      <input id="pass" placeholder="Contraseña" type="password" />
+      <button id="btnLogin">Iniciar sesión</button>
+      <button id="btnRegister">Registrarme</button>
+      <span id="authStatus"></span>
+      <button id="btnLogout" style="margin-left:auto;">Cerrar sesión</button>
+    </div>
+
     <!-- Indicador de "usuario escribiendo..." se inyecta aquí debajo -->
     <div id="typing-anchor"></div>
 
     <ul id="messages"></ul>
 
-    <form id="form" action="">
+    <form id="form" action="" class="disabled">
       <input id="input" autocomplete="off" placeholder="Escribe un mensaje..." />
       <button>Enviar</button>
     </form>
@@ -43,39 +63,56 @@
 
     <script src="/socket.io/socket.io.js"></script>
     <script>
-      const socket = io();
+      // ----- Estado / refs UI -----
+      let socket = null;
+      let token = localStorage.getItem('token') || null;
 
-      // Elementos UI
       const messages = document.getElementById('messages');
       const form = document.getElementById('form');
       const input = document.getElementById('input');
       const userCountEl = document.getElementById('user-count');
-      const topbar = document.getElementById('topbar');
       const roomNameEl = document.getElementById('room-name');
       const typingAnchor = document.getElementById('typing-anchor');
       const ping = document.getElementById('ping');
 
-      // Estado local
+      const userEl = document.getElementById('user');
+      const passEl = document.getElementById('pass');
+      const btnLogin = document.getElementById('btnLogin');
+      const btnRegister = document.getElementById('btnRegister');
+      const btnLogout = document.getElementById('btnLogout');
+      const authStatus = document.getElementById('authStatus');
+
       let myUsername = null;
       let myColor = null;
       let myRoom = 'General';
 
-      // === Pedir nombre, color y sala ===
-      function askUsername() {
-        const proposed = prompt('Elige un nombre de usuario:');
-        socket.emit('set username', proposed, (res) => {
-          if (!res || !res.ok) {
-            alert('Nombre inválido. Prueba de nuevo.');
-            return askUsername();
-          }
-          myUsername = res.username;
+      function setChatEnabled(enabled) {
+        form.classList.toggle('disabled', !enabled);
+      }
+      function setAuthStatus(text) { authStatus.textContent = text || ''; }
 
+      async function api(path, body) {
+        const res = await fetch(path, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body || {})
+        });
+        return res.json();
+      }
+
+      // ----- Conexión del socket ENVIANDO TOKEN -----
+      function connectSocketWithToken() {
+        if (!token) return;
+
+        socket = io({ auth: { token } });
+
+        // === Al conectar, pedimos color y sala (manteniendo tu UX) ===
+        socket.on('connect', () => {
+          // Elegir color (opcional)
           const proposedColor = prompt('Elige un color (p. ej. "tomato" o "#ff5722"). Deja vacío para aleatorio:');
           socket.emit('set color', proposedColor, (ack) => {
-            if (ack && ack.ok) {
-              myColor = ack.color;
-            }
-            // Tras nombre y color, elige sala
+            if (ack && ack.ok) myColor = ack.color;
+            // Elegir sala
             const proposedRoom = prompt('¿A qué sala quieres unirte? (General, Deportes, Música)', 'General');
             socket.emit('join room', proposedRoom, (r) => {
               if (r?.ok) {
@@ -85,154 +122,173 @@
             });
           });
         });
-      }
-      askUsername();
 
-      // === Envío de mensajes ===
-      form.addEventListener('submit', function (e) {
-        e.preventDefault();
-        if (!input.value) return;
-        if (!myUsername) {
-          alert('Debes elegir un nombre antes de chatear.');
-          return askUsername();
-        }
-        socket.emit('chat message', input.value);
-        input.value = '';
-      });
+        // === Chat (hora, color, sonido, flash) ===
+        socket.off('chat message').on('chat message', function (msg) {
+          const li = document.createElement('li');
 
-      // === Render de mensajes (hora, color, sonido, flash) ===
-      socket.off('chat message').on('chat message', function (msg) {
-        const li = document.createElement('li');
+          const date = new Date(msg.ts);
+          const hours = String(date.getHours()).padStart(2, '0');
+          const minutes = String(date.getMinutes()).padStart(2, '0');
+          const time = `${hours}:${minutes}`;
 
-        const date = new Date(msg.ts);
-        const hours = String(date.getHours()).padStart(2, '0');
-        const minutes = String(date.getMinutes()).padStart(2, '0');
-        const time = `${hours}:${minutes}`;
+          const userSpan = document.createElement('span');
+          userSpan.textContent = msg.user;
+          userSpan.style.fontWeight = '600';
+          if (msg.color) userSpan.style.color = msg.color;
 
-        const userSpan = document.createElement('span');
-        userSpan.textContent = msg.user;
-        userSpan.style.fontWeight = '600';
-        if (msg.color) userSpan.style.color = msg.color;
+          li.appendChild(userSpan);
+          li.appendChild(document.createTextNode(` [${time}]: ${msg.text}`));
+          li.classList.add('flash');
+          li.addEventListener('animationend', () => li.classList.remove('flash'), { once: true });
 
-        li.appendChild(userSpan);
-        li.appendChild(document.createTextNode(` [${time}]`));
-        li.appendChild(document.createTextNode(`: ${msg.text}`));
+          messages.appendChild(li);
+          window.scrollTo(0, document.body.scrollHeight);
 
-        // Parpadeo
-        li.classList.add('flash');
-        li.addEventListener('animationend', () => li.classList.remove('flash'), { once: true });
-
-        messages.appendChild(li);
-        window.scrollTo(0, document.body.scrollHeight);
-
-        // Sonido solo para mensajes de otros
-        if (msg.user !== myUsername) {
-          try { ping.currentTime = 0; ping.play().catch(()=>{}); } catch(_){}
-        }
-      });
-
-      // === Mensajes de sistema ===
-      socket.off('system').on('system', function (evt) {
-        const li = document.createElement('li');
-        li.style.fontStyle = 'italic';
-        li.style.opacity = '0.8';
-        li.textContent = `— ${evt.text}`;
-        messages.appendChild(li);
-        window.scrollTo(0, document.body.scrollHeight);
-      });
-
-      // === Conteo global ===
-      socket.off('UserCount').on('UserCount', function (count) {
-        userCountEl.textContent = count;
-      });
-
-      // === Eventos de rooms (avisos y conteo por sala) ===
-      socket.off('RoomJoined').on('RoomJoined', ({ room }) => {
-        myRoom = room;
-        roomNameEl.textContent = `#${room}`;
-        const li = document.createElement('li');
-        li.style.fontStyle = 'italic';
-        li.style.opacity = '0.8';
-        li.textContent = `— Te has unido a #${room}`;
-        messages.appendChild(li);
-      });
-
-      socket.off('RoomUserCount').on('RoomUserCount', ({ room, count }) => {
-        if (room !== myRoom) return; // solo muestro si es mi sala
-        const li = document.createElement('li');
-        li.style.fontStyle = 'italic';
-        li.style.opacity = '0.7';
-        li.textContent = `— Usuarios en #${room}: ${count}`;
-        messages.appendChild(li);
-      });
-
-      // === Usuario escribiendo (UI) ===
-      const typingBar = document.createElement('div');
-      typingBar.id = 'typing-indicator';
-      typingBar.style.textAlign = 'center';
-      typingBar.style.fontSize = '12px';
-      typingBar.style.opacity = '0.8';
-      typingBar.style.padding = '6px 10px';
-      typingBar.style.display = 'none';
-      typingAnchor.insertAdjacentElement('afterend', typingBar);
-
-      const typingUsers = new Set();
-      let iAmTyping = false;
-      let typingTimeout = null;
-      const TYPING_IDLE_MS = 1200;
-
-      function renderTyping() {
-        if (typingUsers.size === 0) {
-          typingBar.style.display = 'none';
-          typingBar.textContent = '';
-          return;
-        }
-        const arr = Array.from(typingUsers);
-        let text = '';
-        if (arr.length === 1) text = `${arr[0]} está escribiendo...`;
-        else if (arr.length === 2) text = `${arr[0]} y ${arr[1]} están escribiendo...`;
-        else text = `${arr[0]}, ${arr[1]} y ${arr.length - 2} más están escribiendo...`;
-        typingBar.textContent = text;
-        typingBar.style.display = 'block';
-      }
-
-      function handleTypingInput() {
-        if (!myUsername) return;
-        if (!iAmTyping) { socket.emit('typing'); iAmTyping = true; }
-        clearTimeout(typingTimeout);
-        typingTimeout = setTimeout(() => {
-          socket.emit('stop typing');
-          iAmTyping = false;
-        }, TYPING_IDLE_MS);
-      }
-
-      input.addEventListener('input', handleTypingInput);
-      input.addEventListener('blur', () => {
-        if (iAmTyping) { socket.emit('stop typing'); iAmTyping = false; }
-      });
-      form.addEventListener('submit', () => {
-        if (iAmTyping) { socket.emit('stop typing'); iAmTyping = false; clearTimeout(typingTimeout); }
-      });
-
-      socket.off('typing').on('typing', ({ user, room }) => {
-        if (!user || user === myUsername) return;
-        // (el server ya emite solo a la sala correcta)
-        typingUsers.add(user);
-        renderTyping();
-      });
-      socket.off('stop typing').on('stop typing', ({ user, room }) => {
-        if (!user || user === myUsername) return;
-        typingUsers.delete(user);
-        renderTyping();
-      });
-
-      // === Helper para cambiar de sala desde consola (opcional) ===
-      // Ejecuta en DevTools: changeRoom('Deportes')
-      window.changeRoom = function (room) {
-        socket.emit('join room', room, (r) => {
-          if (r?.ok) { myRoom = r.room; roomNameEl.textContent = `#${myRoom}`; }
+          if (msg.user !== myUsername) {
+            try { ping.currentTime = 0; ping.play().catch(()=>{}); } catch(_){}
+          }
         });
-      };
+
+        // === Sistema ===
+        socket.off('system').on('system', function (evt) {
+          const li = document.createElement('li');
+          li.style.fontStyle = 'italic';
+          li.style.opacity = '0.8';
+          li.textContent = `— ${evt.text}`;
+          messages.appendChild(li);
+          window.scrollTo(0, document.body.scrollHeight);
+        });
+
+        // === Conteos ===
+        socket.off('UserCount').on('UserCount', (count) => { userCountEl.textContent = count; });
+        socket.off('RoomJoined').on('RoomJoined', ({ room }) => {
+          myRoom = room;
+          roomNameEl.textContent = `#${room}`;
+          const li = document.createElement('li');
+          li.style.fontStyle = 'italic';
+          li.style.opacity = '0.8';
+          li.textContent = `— Te has unido a #${room}`;
+          messages.appendChild(li);
+        });
+        socket.off('RoomUserCount').on('RoomUserCount', ({ room, count }) => {
+          if (room !== myRoom) return;
+          const li = document.createElement('li');
+          li.style.fontStyle = 'italic';
+          li.style.opacity = '0.7';
+          li.textContent = `— Usuarios en #${room}: ${count}`;
+          messages.appendChild(li);
+        });
+
+        // === Typing ===
+        const typingBar = document.createElement('div');
+        typingBar.id = 'typing-indicator';
+        typingBar.style.textAlign = 'center';
+        typingBar.style.fontSize = '12px';
+        typingBar.style.opacity = '0.8';
+        typingBar.style.padding = '6px 10px';
+        typingBar.style.display = 'none';
+        typingAnchor.insertAdjacentElement('afterend', typingBar);
+
+        const typingUsers = new Set();
+        let iAmTyping = false;
+        let typingTimeout = null;
+        const TYPING_IDLE_MS = 1200;
+
+        function renderTyping() {
+          if (typingUsers.size === 0) { typingBar.style.display = 'none'; typingBar.textContent = ''; return; }
+          const arr = Array.from(typingUsers);
+          let text = '';
+          if (arr.length === 1) text = `${arr[0]} está escribiendo...`;
+          else if (arr.length === 2) text = `${arr[0]} y ${arr[1]} están escribiendo...`;
+          else text = `${arr[0]}, ${arr[1]} y ${arr.length - 2} más están escribiendo...`;
+          typingBar.textContent = text;
+          typingBar.style.display = 'block';
+        }
+
+        function handleTypingInput() {
+          if (!myUsername) return;
+          if (!iAmTyping) { socket.emit('typing'); iAmTyping = true; }
+          clearTimeout(typingTimeout);
+          typingTimeout = setTimeout(() => { socket.emit('stop typing'); iAmTyping = false; }, TYPING_IDLE_MS);
+        }
+        input.addEventListener('input', handleTypingInput);
+        input.addEventListener('blur', () => { if (iAmTyping) { socket.emit('stop typing'); iAmTyping = false; }});
+        form.addEventListener('submit', () => { if (iAmTyping) { socket.emit('stop typing'); iAmTyping = false; clearTimeout(typingTimeout); }});
+
+        socket.off('typing').on('typing', ({ user }) => { if (!user || user === myUsername) return; typingUsers.add(user); renderTyping(); });
+        socket.off('stop typing').on('stop typing', ({ user }) => { if (!user || user === myUsername) return; typingUsers.delete(user); renderTyping(); });
+
+        // === Envío de mensajes (habilitado solo con sesión) ===
+        form.addEventListener('submit', function (e) {
+          e.preventDefault();
+          if (!input.value) return;
+          socket.emit('chat message', input.value);
+          input.value = '';
+        });
+      }
+
+      // ----- Auth: Login / Registro / Logout -----
+      btnLogin.addEventListener('click', async () => {
+        const username = userEl.value.trim();
+        const password = passEl.value;
+        if (!username || !password) return setAuthStatus('Usuario y contraseña requeridos');
+
+        const res = await api('/api/login', { username, password });
+        if (!res.ok) return setAuthStatus(res.error || 'Login inválido');
+
+        token = res.token;
+        myUsername = res.username;
+        localStorage.setItem('token', token);
+        setAuthStatus(`Conectado como ${myUsername}`);
+        setChatEnabled(true);
+
+        connectSocketWithToken();
+      });
+
+      btnRegister.addEventListener('click', async () => {
+        const username = userEl.value.trim();
+        const password = passEl.value;
+        if (!username || !password) return setAuthStatus('Usuario y contraseña requeridos');
+
+        const res = await api('/api/register', { username, password });
+        if (!res.ok) return setAuthStatus(res.error || 'Registro inválido');
+
+        token = res.token;
+        myUsername = res.username;
+        localStorage.setItem('token', token);
+        setAuthStatus(`Registrado y conectado como ${myUsername}`);
+        setChatEnabled(true);
+
+        connectSocketWithToken();
+      });
+
+      btnLogout.addEventListener('click', () => {
+        if (socket) { socket.disconnect(); socket = null; }
+        token = null; myUsername = null; myColor = null; myRoom = 'General';
+        localStorage.removeItem('token');
+        setAuthStatus('Sesión cerrada');
+        setChatEnabled(false);
+      });
+
+      // ----- Autologin: si hay token guardado, verificar y conectar -----
+      (async function autologin() {
+        if (!token) return;
+        try {
+          const res = await fetch('/api/me', { headers: { Authorization: 'Bearer ' + token }});
+          const data = await res.json();
+          if (data.ok) {
+            myUsername = data.user.username;
+            setAuthStatus(`Conectado como ${myUsername}`);
+            setChatEnabled(true);
+            connectSocketWithToken();
+          } else {
+            localStorage.removeItem('token');
+          }
+        } catch {
+          localStorage.removeItem('token');
+        }
+      })();
     </script>
   </body>
 </html>
